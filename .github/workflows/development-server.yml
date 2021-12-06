@@ -1,34 +1,95 @@
-# This is a basic workflow to help you get started with Actions
-
-name: CI
-
-# Controls when the workflow will run
+name: 젬파이 개발 서버 배포
 on:
-  # Triggers the workflow on push or pull request events but only for the master branch
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
-
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+    push:
+        branches:
+            - dev
+    workflow_dispatch:
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    build:
+        name: "빌드"
+        runs-on: ubuntu-latest
+        env:
+            IMAGE_NAME: zempie-server
+            PAT: ${{ secrets.PAT }}
+        outputs:
+            tag: ${{ steps.docker-image-tag-name.outputs.tag }}
+        steps:
+            - uses: actions/checkout@v2
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
-    steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v2
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v1
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-      - run:  npm install 
-      
-      - name: Build Typescript
-        run: npm run build
+            - name: Get package.json version
+              id: package-version
+              run: |
+                  echo "::set-output name=version::$(node -p "require('./package.json').version")"
 
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v1
+              with:
+                  registry: ghcr.io
+                  username: ParkHeeJin-Yumis
+                  password: ${{ secrets.PAT }}
+
+            - name: Docker 이미지 태그 결정
+              id: docker-image-tag-name
+              run: |
+                  echo "::set-output name=tag::${{ steps.package-version.outputs.current-version }}_build_${{ github.run_number }}"
+
+            - name: Build Dockerfile
+              id: docker-build
+              uses: docker/build-push-action@v2
+              with:
+                  context: ./
+                  push: true
+                  file: ./Dockerfile
+                  cache-from: type=local,src=/tmp/.buildx-cache
+                  cache-to: type=local,dest=/tmp/.buildx-cache-new
+                  tags: |
+                      ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
+                      ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.docker-image-tag-name.outputs.tag }}
+                  build-args: |
+                      NPM_TOKEN=${{ env.PAT }}
+                  secrets: |
+                      GIT_AUTH_TOKEN=${{ env.PAT }}
+
+            - name: Cache Docker layers
+              run: |
+                  rm -rf /tmp/.buildx-cache
+                  mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+    deploy:
+        name: "배포"
+        runs-on: [self-hosted, linux, X64]
+        needs: build
+        env:
+            SSH_HOSTNAME: ${{ secrets.SSH_HOSTNAME }}
+            USER_NAME: ${{ secrets.USER_NAME }}
+            SSH_KEY: ${{ secrets.KEY }}
+        steps:
+            - uses: actions/checkout@v2
+
+            - name: docker-compose.yml 업로드
+              uses: appleboy/scp-action@master
+              with:
+                  host: ${{ secrets.SSH_HOSTNAME }}
+                  username: ${{ secrets.USER_NAME }}
+                  # password: ${{ secrets.PASSWORD }}
+                  key: ${{ secrets.KEY }}
+                  source: ./docker-compose.yml
+                  target: ~/zempie-community
+                  overwrite: true
+
+            - name: Docker 이미지 배포
+              uses: appleboy/ssh-action@master
+              with:
+                  host: ${{ secrets.SSH_HOSTNAME }}
+                  username: ${{ secrets.USER_NAME }}
+                  key: ${{ secrets.KEY }}
+                  script: |
+                      cd ~/zempie-community
+                      echo ${{ secrets.PAT }} | docker login ghcr.io --username ParkHeeJin-Yumis --password-stdin
+                      docker pull ghcr.io/${{ github.repository_owner }}/zempie-server:${{ needs.build.outputs.tag }}
+                      TAG=${{ needs.build.outputs.tag }} docker-compose up -d
+                      docker system prune --all --force
+                      docker tag ghcr.io/${{ github.repository_owner }}/zempie-server:${{ needs.build.outputs.tag }} ghcr.io/${{ github.repository_owner }}/zempie-server:latest
