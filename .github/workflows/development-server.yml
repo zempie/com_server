@@ -63,7 +63,7 @@ jobs:
         runs-on: [self-hosted, linux, X64]
         needs: build
         env:
-            SSH_HOSTNAME: ${{ secrets.SSH_HOSTNAME }}
+            SSH_HOSTNAME: ${{ git@192.168.0.36:raptor/zempie_community_server.git }}
             USER_NAME: ${{ secrets.USER_NAME }}
             SSH_KEY: ${{ secrets.KEY }}
         steps:
@@ -73,7 +73,7 @@ jobs:
               uses: appleboy/scp-action@master
               with:
                   host: ${{ secrets.SSH_HOSTNAME }}
-                  username: ${{ secrets.USER_NAME }}
+                  username: ${{ dev103 }}
                   # password: ${{ secrets.PASSWORD }}
                   key: ${{ secrets.KEY }}
                   source: ./docker-compose.yml
